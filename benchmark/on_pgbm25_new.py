@@ -39,7 +39,15 @@ class PgClient:
                 copy.set_types(["text", "text"])
                 for i, text in tqdm(zip(query_ids, query_lst), desc="copy queries", leave=False):
                     copy.write_row((i, text))
-            cursor.execute("SELECT create_unicode_tokenizer_and_trigger('test_token', 'corpus', 'text', 'embedding')")
+            cursor.execute("""
+SELECT create_tokenizer('test_token', $$
+tokenizer = 'unicode'
+table = 'corpus'
+column = 'text'
+stopwords = 'nltk'
+$$);
+""")
+            cursor.execute("UPDATE corpus SET embedding = tokenize(text, 'test_token');")
 
     def index(self):
         with self.client.cursor() as cursor:
