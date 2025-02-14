@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 import os
 import json
+import gc
 
 import psycopg
 from tqdm import tqdm
@@ -72,6 +73,8 @@ $$);
             cursor.execute("DROP TABLE IF EXISTS queries")
             cursor.execute("SELECT drop_tokenizer('test_token')")
 
+CLIENT_URL="postgresql://silver:silvervectorchordbm25@localhost:5432/testdb"
+
 def main(
     dataset,
     top_k,
@@ -81,10 +84,10 @@ def main(
     b,
     tokenizer,
     remove,
-    skip,
+    skip_index,
 ):
     if remove:
-        client = PgClient("postgresql://silver:@127.0.0.1:28817/testdb", k1, b, tokenizer)
+        client = PgClient(CLIENT_URL, k1, b, tokenizer)
         client.remove()
         return
 
@@ -100,11 +103,14 @@ def main(
 
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split=split)
     num_docs = len(corpus)
+    num_queries = len(queries)
 
     corpus_ids, corpus_lst = [], []
     for key, val in corpus.items():
         corpus_ids.append(key)
-        corpus_lst.append(val["title"] + " " + val["text"])
+        corpus_item = val["title"] + " " + val["text"]
+        corpus_item = corpus_item.replace("\u0000", "")
+        corpus_lst.append(corpus_item)
 
     del corpus
 
@@ -116,23 +122,35 @@ def main(
     print("=" * 50)
     print("Dataset: ", dataset)
     print(f"Corpus Size: {num_docs:,}")
-    print(f"Queries Size: {len(queries_lst):,}")
+    print(f"Queries Size: {num_queries:,}")
 
-    client = PgClient("postgresql://silver:@127.0.0.1:28817/testdb", k1, b, tokenizer)
+    client = PgClient(CLIENT_URL, k1, b, tokenizer)
 
     timer = Timer("[pgbm25.rs]")
-    if not skip:
+    if not skip_index:
         t_insert = timer.start("Insert")
         client.create(corpus_ids, corpus_lst, qids, queries_lst)
         timer.stop(t_insert, show=True, n_total=num_docs)
 
+        del corpus_lst
+        del corpus_ids
+        del qids
+        del queries_lst
+        gc.collect()
+
         t_index = timer.start("Index")
         client.index()
         timer.stop(t_index, show=True, n_total=num_docs)
+    else:
+        del corpus_lst
+        del corpus_ids
+        del qids
+        del queries_lst
+        gc.collect()
 
     t_query = timer.start("Query")
     results = client.query(top_k)
-    timer.stop(t_query, show=True, n_total=len(queries_lst))
+    timer.stop(t_query, show=True, n_total=num_queries)
 
     format_results = {}
     for qid, cid, score in results:
@@ -167,7 +185,7 @@ def main(
         "max_mem_gb": max_mem_gb,
         "stats": {
             "num_docs": num_docs,
-            "num_queries": len(queries_lst),
+            "num_queries": num_queries,
         },
         "timing": timer.to_dict(underscore=True, lowercase=True),
         "scores": {
@@ -236,14 +254,12 @@ def build_argument():
     parser.add_argument(
         "-r",
         "--remove",
-        type=bool,
-        default=False,
+        action="store_true",
     )
     parser.add_argument(
         "-s",
-        "--skip",
-        type=bool,
-        default=False,
+        "--skip_index",
+        action="store_true",
     )
     return parser
 
